@@ -1,0 +1,659 @@
+--==========================================
+-- ⭐️星喵~ 3D 脚本 UI (人物前方动态跟随版)
+-- 直接粘贴到执行器里运行即可
+-- 按 T 键 / 点击右上角按钮 可切换跟随/固定
+--==========================================
+
+-- ===== 0. 清理旧版本 =====
+if _G.__StarMeow_Cleanup then
+    pcall(_G.__StarMeow_Cleanup)
+    _G.__StarMeow_Cleanup = nil
+end
+
+local Connections = {}
+local function addConn(c) table.insert(Connections, c) return c end
+
+-- ===== 1. 服务与变量 =====
+local Players           = game:GetService("Players")
+local RunService        = game:GetService("RunService")
+local UserInputService  = game:GetService("UserInputService")
+local Lighting          = game:GetService("Lighting")
+
+local LocalPlayer = Players.LocalPlayer
+if not LocalPlayer then
+    repeat task.wait(0.1) until Players.LocalPlayer
+    LocalPlayer = Players.LocalPlayer
+end
+
+local Camera = workspace.CurrentCamera
+if not Camera then
+    repeat task.wait(0.1); Camera = workspace.CurrentCamera until Camera
+end
+
+-- 状态变量
+local isFollowingCamera = true
+local noclipEnabled     = false
+local noclipConn        = nil
+
+-- 偏移量配置 (人物前方)
+local FOLLOW_OFFSET = Vector3.new(0, 4, -7) -- 上方4格，前方7格(-Z轴方向)
+
+-- ===== 2. 核心 3D 容器 =====
+local PANEL_W, PANEL_H = 900, 450
+local PPS              = 60
+
+local uiPart = Instance.new("Part")
+uiPart.Name          = "FloatingUIPart"
+uiPart.Size          = Vector3.new(PANEL_W / PPS, PANEL_H / PPS, 0.1)
+uiPart.Transparency  = 1
+uiPart.Anchored      = true
+uiPart.CanCollide    = false
+uiPart.CanTouch      = false
+uiPart.CanQuery      = true
+uiPart.CastShadow    = false
+uiPart.Massless      = true
+uiPart.Parent        = workspace
+
+local surfaceGui = Instance.new("SurfaceGui")
+surfaceGui.Face            = Enum.NormalId.Front
+surfaceGui.SizingMode      = Enum.SurfaceGuiSizingMode.PixelsPerStud
+surfaceGui.PixelsPerStud   = PPS
+surfaceGui.LightInfluence  = 0
+surfaceGui.Active          = true
+surfaceGui.ZOffset         = 1
+surfaceGui.Parent          = uiPart
+
+-- ===== 3. 主背景 =====
+local mainFrame = Instance.new("Frame")
+mainFrame.Size                 = UDim2.new(0, PANEL_W, 0, PANEL_H)
+mainFrame.Position             = UDim2.new(0.5, -PANEL_W/2, 0.5, -PANEL_H/2)
+mainFrame.BackgroundColor3     = Color3.fromRGB(15, 15, 20)
+mainFrame.BackgroundTransparency = 0.1
+mainFrame.BorderSizePixel      = 0
+mainFrame.Parent               = surfaceGui
+
+local mainCorner = Instance.new("UICorner")
+mainCorner.CornerRadius = UDim.new(0, 12)
+mainCorner.Parent = mainFrame
+
+local mainStroke = Instance.new("UIStroke")
+mainStroke.Color        = Color3.fromRGB(0, 200, 120)
+mainStroke.Thickness    = 2
+mainStroke.Transparency = 0.3
+mainStroke.Parent       = mainFrame
+
+-- 顶部标题栏
+local header = Instance.new("Frame")
+header.Size               = UDim2.new(1, 0, 0, 45)
+header.BackgroundColor3   = Color3.fromRGB(20, 20, 25)
+header.BackgroundTransparency = 0.3
+header.BorderSizePixel    = 0
+header.Parent             = mainFrame
+
+local headerCorner = Instance.new("UICorner")
+headerCorner.CornerRadius = UDim.new(0, 12)
+headerCorner.Parent = header
+
+local headerTitle = Instance.new("TextLabel")
+headerTitle.Size              = UDim2.new(1, -260, 1, 0)
+headerTitle.Position          = UDim2.new(0, 20, 0, 0)
+headerTitle.BackgroundTransparency = 1
+headerTitle.Text              = "⭐️星喵~ 3D 脚本"
+headerTitle.TextColor3        = Color3.fromRGB(0, 255, 150)
+headerTitle.Font              = Enum.Font.GothamBold
+headerTitle.TextSize          = 20
+headerTitle.TextXAlignment    = Enum.TextXAlignment.Left
+headerTitle.Parent            = header
+
+local toggleBtn = Instance.new("TextButton")
+toggleBtn.Size               = UDim2.new(0, 100, 0, 30)
+toggleBtn.Position           = UDim2.new(1, -150, 0, 8)
+toggleBtn.BackgroundColor3   = Color3.fromRGB(40, 40, 45)
+toggleBtn.BorderSizePixel    = 0
+toggleBtn.Text               = "跟随人物"
+toggleBtn.TextColor3         = Color3.fromRGB(0, 255, 150)
+toggleBtn.Font               = Enum.Font.Gotham
+toggleBtn.TextSize           = 14
+toggleBtn.AutoButtonColor    = false
+toggleBtn.Parent             = header
+
+local btnCorner = Instance.new("UICorner")
+btnCorner.CornerRadius = UDim.new(0, 6)
+btnCorner.Parent = toggleBtn
+
+local btnStroke = Instance.new("UIStroke")
+btnStroke.Color        = Color3.fromRGB(0, 255, 150)
+btnStroke.Thickness    = 1
+btnStroke.Transparency = 0.5
+btnStroke.Parent       = toggleBtn
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size               = UDim2.new(0, 30, 0, 30)
+closeBtn.Position           = UDim2.new(1, -40, 0, 8)
+closeBtn.BackgroundColor3   = Color3.fromRGB(70, 30, 30)
+closeBtn.BorderSizePixel    = 0
+closeBtn.Text               = "✕"
+closeBtn.TextColor3         = Color3.fromRGB(255, 120, 120)
+closeBtn.Font               = Enum.Font.GothamBold
+closeBtn.TextSize           = 14
+closeBtn.AutoButtonColor    = false
+closeBtn.Parent             = header
+
+local cbCorner = Instance.new("UICorner")
+cbCorner.CornerRadius = UDim.new(0, 6)
+cbCorner.Parent = closeBtn
+
+-- ===== 4. 左侧功能栏 =====
+local leftPanel = Instance.new("Frame")
+leftPanel.Size               = UDim2.new(0, 215, 1, -70)
+leftPanel.Position           = UDim2.new(0, 15, 0, 55)
+leftPanel.BackgroundColor3   = Color3.fromRGB(25, 25, 30)
+leftPanel.BackgroundTransparency = 0.3
+leftPanel.BorderSizePixel    = 0
+leftPanel.Parent             = mainFrame
+
+local lpCorner = Instance.new("UICorner"); lpCorner.CornerRadius = UDim.new(0, 8); lpCorner.Parent = leftPanel
+local lpStroke = Instance.new("UIStroke"); lpStroke.Color = Color3.fromRGB(60, 60, 70); lpStroke.Thickness = 1; lpStroke.Parent = leftPanel
+
+local leftTitle = Instance.new("TextLabel")
+leftTitle.Size = UDim2.new(1, 0, 0, 35)
+leftTitle.BackgroundTransparency = 1
+leftTitle.Text = "功能菜单"
+leftTitle.TextColor3 = Color3.fromRGB(200, 200, 200)
+leftTitle.Font = Enum.Font.GothamBold
+leftTitle.TextSize = 16
+leftTitle.Parent = leftPanel
+
+local leftList = Instance.new("ScrollingFrame")
+leftList.Size = UDim2.new(1, -20, 1, -45)
+leftList.Position = UDim2.new(0, 10, 0, 40)
+leftList.BackgroundTransparency = 1
+leftList.BorderSizePixel = 0
+leftList.ScrollBarThickness = 4
+leftList.ScrollBarImageColor3 = Color3.fromRGB(0, 200, 120)
+leftList.CanvasSize = UDim2.new(0, 0, 0, 0)
+leftList.AutomaticCanvasSize = Enum.AutomaticSize.Y
+leftList.Parent = leftPanel
+
+local listLayout = Instance.new("UIListLayout")
+listLayout.Padding = UDim.new(0, 8)
+listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+listLayout.Parent = leftList
+
+-- ===== 5. 中间信息栏 =====
+local centerPanel = Instance.new("Frame")
+centerPanel.Size               = UDim2.new(0, 405, 1, -70)
+centerPanel.Position           = UDim2.new(0, 245, 0, 55)
+centerPanel.BackgroundColor3   = Color3.fromRGB(25, 25, 30)
+centerPanel.BackgroundTransparency = 0.3
+centerPanel.BorderSizePixel    = 0
+centerPanel.Parent             = mainFrame
+
+local cpCorner = Instance.new("UICorner"); cpCorner.CornerRadius = UDim.new(0, 8); cpCorner.Parent = centerPanel
+local cpStroke = Instance.new("UIStroke"); cpStroke.Color = Color3.fromRGB(60, 60, 70); cpStroke.Thickness = 1; cpStroke.Parent = centerPanel
+
+local centerTitle = Instance.new("TextLabel")
+centerTitle.Size = UDim2.new(1, 0, 0, 35)
+centerTitle.BackgroundTransparency = 1
+centerTitle.Text = "运行状态"
+centerTitle.TextColor3 = Color3.fromRGB(200, 200, 200)
+centerTitle.Font = Enum.Font.GothamBold
+centerTitle.TextSize = 16
+centerTitle.Parent = centerPanel
+
+local avatar = Instance.new("ImageLabel")
+avatar.Size = UDim2.new(0, 80, 0, 80)
+avatar.Position = UDim2.new(0, 20, 0, 50)
+avatar.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+avatar.BorderSizePixel = 0
+avatar.Image = "rbxthumb://type=AvatarHeadShot&id=" .. LocalPlayer.UserId .. "&w=150&h=150"
+avatar.Parent = centerPanel
+
+local avCorner = Instance.new("UICorner"); avCorner.CornerRadius = UDim.new(1, 0); avCorner.Parent = avatar
+
+local nameLabel = Instance.new("TextLabel")
+nameLabel.Size = UDim2.new(0, 285, 0, 30)
+nameLabel.Position = UDim2.new(0, 115, 0, 55)
+nameLabel.BackgroundTransparency = 1
+nameLabel.Text = LocalPlayer.DisplayName .. " (@" .. LocalPlayer.Name .. ")"
+nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+nameLabel.Font = Enum.Font.GothamBold
+nameLabel.TextSize = 18
+nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+nameLabel.Parent = centerPanel
+
+local idLabel = Instance.new("TextLabel")
+idLabel.Size = UDim2.new(0, 285, 0, 20)
+idLabel.Position = UDim2.new(0, 115, 0, 85)
+idLabel.BackgroundTransparency = 1
+idLabel.Text = "UID: " .. LocalPlayer.UserId .. "  |  QQ群: 460299170"
+idLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
+idLabel.Font = Enum.Font.Gotham
+idLabel.TextSize = 13
+idLabel.TextXAlignment = Enum.TextXAlignment.Left
+idLabel.TextTruncate = Enum.TextTruncate.AtEnd
+idLabel.Parent = centerPanel
+
+local statsFrame = Instance.new("Frame")
+statsFrame.Size = UDim2.new(1, -40, 0, 200)
+statsFrame.Position = UDim2.new(0, 20, 0, 150)
+statsFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
+statsFrame.BackgroundTransparency = 0.5
+statsFrame.BorderSizePixel = 0
+statsFrame.Parent = centerPanel
+
+local sfCorner = Instance.new("UICorner"); sfCorner.CornerRadius = UDim.new(0, 8); sfCorner.Parent = statsFrame
+local sfStroke = Instance.new("UIStroke"); sfStroke.Color = Color3.fromRGB(60, 60, 70); sfStroke.Thickness = 1; sfStroke.Parent = statsFrame
+
+local function makeStatLabel(y, align)
+    local l = Instance.new("TextLabel")
+    l.Size = UDim2.new(0.5, -15, 0, 24)
+    l.Position = UDim2.new(align == "L" and 0 or 0.5, align == "L" and 15 or 0, 0, y)
+    l.BackgroundTransparency = 1
+    l.TextColor3 = Color3.fromRGB(180, 180, 180)
+    l.Font = Enum.Font.Gotham
+    l.TextSize = 14
+    l.TextXAlignment = align == "L" and Enum.TextXAlignment.Left or Enum.TextXAlignment.Right
+    l.Text = ""
+    l.Parent = statsFrame
+    return l
+end
+
+local fpsLabel      = makeStatLabel(12, "L")
+local timeLabel     = makeStatLabel(12, "R")
+local speedLabel    = makeStatLabel(44, "L")
+local noclipLabel   = makeStatLabel(44, "R")
+local posLabel      = makeStatLabel(76, "L")
+local dayLabel      = makeStatLabel(76, "R")
+local tipLabel = Instance.new("TextLabel")
+tipLabel.Size = UDim2.new(1, -30, 0, 80)
+tipLabel.Position = UDim2.new(0, 15, 0, 105)
+tipLabel.BackgroundTransparency = 1
+tipLabel.TextColor3 = Color3.fromRGB(110, 110, 120)
+tipLabel.Font = Enum.Font.Gotham
+tipLabel.TextSize = 13
+tipLabel.TextWrapped = true
+tipLabel.TextXAlignment = Enum.TextXAlignment.Left
+tipLabel.TextYAlignment = Enum.TextYAlignment.Top
+tipLabel.Text = "提示：\n• 按 T 键切换跟随 / 固定\n• 面板已绑定在人物前方\n• 穿墙开启后再关闭会恢复碰撞"
+tipLabel.Parent = statsFrame
+
+-- FPS 刷新
+do
+    local frameCount, lastTime = 0, os.clock()
+    addConn(RunService.RenderStepped:Connect(function()
+        frameCount += 1
+        local now = os.clock()
+        if now - lastTime >= 0.5 then
+            local fps = math.floor(frameCount / (now - lastTime) + 0.5)
+            fpsLabel.Text = "FPS: " .. fps
+            fpsLabel.TextColor3 = fps >= 50 and Color3.fromRGB(0, 255, 150)
+                                or fps >= 25 and Color3.fromRGB(255, 200, 60)
+                                or Color3.fromRGB(255, 90, 90)
+            frameCount, lastTime = 0, now
+        end
+    end))
+end
+
+-- 时间刷新
+task.spawn(function()
+    while uiPart.Parent do
+        timeLabel.Text = "时间: " .. os.date("%H:%M:%S")
+        task.wait(1)
+    end
+end)
+
+-- 状态刷新
+task.spawn(function()
+    while uiPart.Parent do
+        local char = LocalPlayer.Character
+        local hum  = char and char:FindFirstChildOfClass("Humanoid")
+        local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+
+        speedLabel.Text = "速度: " .. (hum and math.floor(hum.WalkSpeed) or "--")
+        noclipLabel.Text = "穿墙: " .. (noclipEnabled and "ON" or "OFF")
+        noclipLabel.TextColor3 = noclipEnabled and Color3.fromRGB(0, 255, 150) or Color3.fromRGB(180, 180, 180)
+
+        if hrp then
+            local p = hrp.Position
+            posLabel.Text = string.format("坐标: %d, %d, %d", p.X, p.Y, p.Z)
+        else
+            posLabel.Text = "坐标: --"
+        end
+
+        dayLabel.Text = "环境: " .. (Lighting.ClockTime < 6 or Lighting.ClockTime > 18 and "夜晚" or "白天")
+        task.wait(0.25)
+    end
+end)
+
+-- ===== 6. 功能逻辑 =====
+local function resetCharacter()
+    local char = LocalPlayer.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then hum.Health = 0 else char:BreakJoints() end
+end
+
+local function setDayNight(isNight)
+    if isNight then
+        Lighting.ClockTime  = 0
+        Lighting.Brightness = 0.5
+        Lighting.Ambient    = Color3.fromRGB(20, 20, 30)
+    else
+        Lighting.ClockTime  = 14
+        Lighting.Brightness = 2
+        Lighting.Ambient    = Color3.fromRGB(128, 128, 128)
+    end
+end
+
+local function setNoclip(state)
+    noclipEnabled = state
+    if noclipConn then noclipConn:Disconnect(); noclipConn = nil end
+
+    if state then
+        noclipConn = RunService.Stepped:Connect(function()
+            local char = LocalPlayer.Character
+            if not char then return end
+            for _, v in ipairs(char:GetDescendants()) do
+                if v:IsA("BasePart") and v.CanCollide then
+                    v.CanCollide = false
+                end
+            end
+        end)
+        addConn(noclipConn)
+    else
+        local char = LocalPlayer.Character
+        if char then
+            for _, v in ipairs(char:GetDescendants()) do
+                if v:IsA("BasePart") then
+                    v.CanCollide = true
+                end
+            end
+        end
+    end
+end
+
+local function giveTeleportTool()
+    local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
+    if not backpack then return end
+
+    local old = backpack:FindFirstChild("⭐️星喵传送工具")
+    if old then old:Destroy() end
+
+    local tool = Instance.new("Tool")
+    tool.RequiresHandle = false
+    tool.CanBeDropped   = false
+    tool.Name           = "⭐️星喵传送工具"
+
+    addConn(tool.Activated:Connect(function()
+        local mouse = LocalPlayer:GetMouse()
+        local ray   = mouse.UnitRay
+
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        local filter = { uiPart }
+        if LocalPlayer.Character then table.insert(filter, LocalPlayer.Character) end
+        params.FilterDescendantsInstances = filter
+
+        local result = workspace:Raycast(ray.Origin, ray.Direction * 1000, params)
+        if result then
+            local char = LocalPlayer.Character
+            local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                hrp.CFrame = CFrame.new(result.Position + Vector3.new(0, 3, 0))
+            end
+        end
+    end))
+
+    tool.Parent = backpack
+
+    local char = LocalPlayer.Character
+    local hum  = char and char:FindFirstChildOfClass("Humanoid")
+    if hum then hum:EquipTool(tool) end
+end
+
+local function setSpeed(speed)
+    local char = LocalPlayer.Character
+    local hum  = char and char:FindFirstChildOfClass("Humanoid")
+    if hum then hum.WalkSpeed = speed end
+end
+
+local function copyText(text)
+    local ok = pcall(function()
+        if typeof(setclipboard) == "function" then
+            setclipboard(text)
+        elseif typeof(setClipboard) == "function" then
+            setClipboard(text)
+        else
+            error("no clipboard function")
+        end
+    end)
+    return ok
+end
+
+-- ===== 7. 左侧按钮生成 =====
+local function createLeftButton(name, callback)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, 0, 0, 34)
+    btn.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
+    btn.BorderSizePixel = 0
+    btn.Text = name
+    btn.TextColor3 = Color3.fromRGB(180, 180, 180)
+    btn.Font = Enum.Font.Gotham
+    btn.TextSize = 14
+    btn.AutoButtonColor = false
+    btn.Parent = leftList
+
+    local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 6); c.Parent = btn
+    local s = Instance.new("UIStroke"); s.Color = Color3.fromRGB(60, 60, 70); s.Thickness = 1; s.Parent = btn
+
+    addConn(btn.MouseEnter:Connect(function()
+        btn.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+        s.Color = Color3.fromRGB(0, 200, 120)
+    end))
+    addConn(btn.MouseLeave:Connect(function()
+        btn.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
+        s.Color = Color3.fromRGB(60, 60, 70)
+    end))
+    addConn(btn.MouseButton1Click:Connect(function()
+        btn.BackgroundColor3 = Color3.fromRGB(0, 150, 80)
+        task.delay(0.15, function()
+            if btn.Parent then btn.BackgroundColor3 = Color3.fromRGB(35, 35, 40) end
+        end)
+        if callback then
+            local ok, err = pcall(callback)
+            if not ok then warn("[星喵UI] " .. name .. " 执行失败: " .. tostring(err)) end
+        end
+    end))
+    return btn
+end
+
+createLeftButton("重置人物", resetCharacter)
+createLeftButton("切换到白天", function() setDayNight(false) end)
+createLeftButton("切换到夜晚", function() setDayNight(true) end)
+createLeftButton("获取传送工具", giveTeleportTool)
+createLeftButton("清除雾气", function()
+    Lighting.FogStart = 100000
+    Lighting.FogEnd   = 100000
+end)
+createLeftButton("复制QQ群", function() copyText("460299170") end)
+
+-- ===== 8. 右侧速度控制栏 =====
+local rightPanel = Instance.new("Frame")
+rightPanel.Size               = UDim2.new(0, 220, 1, -70)
+rightPanel.Position           = UDim2.new(0, 665, 0, 55)
+rightPanel.BackgroundColor3   = Color3.fromRGB(25, 25, 30)
+rightPanel.BackgroundTransparency = 0.3
+rightPanel.BorderSizePixel    = 0
+rightPanel.Parent             = mainFrame
+
+local rpCorner = Instance.new("UICorner"); rpCorner.CornerRadius = UDim.new(0, 8); rpCorner.Parent = rightPanel
+local rpStroke = Instance.new("UIStroke"); rpStroke.Color = Color3.fromRGB(60, 60, 70); rpStroke.Thickness = 1; rpStroke.Parent = rightPanel
+
+local rightTitle = Instance.new("TextLabel")
+rightTitle.Size = UDim2.new(1, 0, 0, 35)
+rightTitle.BackgroundTransparency = 1
+rightTitle.Text = "速度控制"
+rightTitle.TextColor3 = Color3.fromRGB(200, 200, 200)
+rightTitle.Font = Enum.Font.GothamBold
+rightTitle.TextSize = 16
+rightTitle.Parent = rightPanel
+
+local rightList = Instance.new("Frame")
+rightList.Size = UDim2.new(1, -20, 1, -45)
+rightList.Position = UDim2.new(0, 10, 0, 40)
+rightList.BackgroundTransparency = 1
+rightList.Parent = rightPanel
+
+local rLayout = Instance.new("UIListLayout")
+rLayout.Padding = UDim.new(0, 8)
+rLayout.SortOrder = Enum.SortOrder.LayoutOrder
+rLayout.Parent = rightList
+
+local function createSpeedBtn(text, speed)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, 0, 0, 34)
+    btn.BackgroundColor3 = Color3.fromRGB(60, 60, 65)
+    btn.BorderSizePixel = 0
+    btn.Text = text
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    btn.Font = Enum.Font.Gotham
+    btn.TextSize = 14
+    btn.AutoButtonColor = false
+    btn.Parent = rightList
+
+    local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 6); c.Parent = btn
+
+    addConn(btn.MouseButton1Click:Connect(function()
+        setSpeed(speed)
+        btn.BackgroundColor3 = Color3.fromRGB(0, 150, 80)
+        task.delay(0.2, function()
+            if btn.Parent then btn.BackgroundColor3 = Color3.fromRGB(60, 60, 65) end
+        end)
+    end))
+end
+
+createSpeedBtn("正常速度 (16)", 16)
+createSpeedBtn("加速 (50)", 50)
+createSpeedBtn("高速 (100)", 100)
+createSpeedBtn("超速 (200)", 200)
+
+local noclipBtn = Instance.new("TextButton")
+noclipBtn.Size = UDim2.new(1, 0, 0, 34)
+noclipBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 65)
+noclipBtn.BorderSizePixel = 0
+noclipBtn.Text = "穿墙 [OFF]"
+noclipBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+noclipBtn.Font = Enum.Font.Gotham
+noclipBtn.TextSize = 14
+noclipBtn.AutoButtonColor = false
+noclipBtn.Parent = rightList
+
+local ncCorner = Instance.new("UICorner"); ncCorner.CornerRadius = UDim.new(0, 6); ncCorner.Parent = noclipBtn
+
+addConn(noclipBtn.MouseButton1Click:Connect(function()
+    setNoclip(not noclipEnabled)
+    if noclipEnabled then
+        noclipBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 80)
+        noclipBtn.Text = "穿墙 [ON]"
+    else
+        noclipBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 65)
+        noclipBtn.Text = "穿墙 [OFF]"
+    end
+end))
+
+local restoreBtn = Instance.new("TextButton")
+restoreBtn.Size = UDim2.new(1, 0, 0, 34)
+restoreBtn.BackgroundColor3 = Color3.fromRGB(70, 50, 50)
+restoreBtn.BorderSizePixel = 0
+restoreBtn.Text = "一键恢复默认"
+restoreBtn.TextColor3 = Color3.fromRGB(255, 200, 200)
+restoreBtn.Font = Enum.Font.Gotham
+restoreBtn.TextSize = 14
+restoreBtn.AutoButtonColor = false
+restoreBtn.Parent = rightList
+
+local rbCorner = Instance.new("UICorner"); rbCorner.CornerRadius = UDim.new(0, 6); rbCorner.Parent = restoreBtn
+
+addConn(restoreBtn.MouseButton1Click:Connect(function()
+    setSpeed(16)
+    setNoclip(false)
+    noclipBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 65)
+    noclipBtn.Text = "穿墙 [OFF]"
+    setDayNight(false)
+end))
+
+-- ===== 9. 人物前方动态跟随（核心修改） =====
+-- 更新 UI 位置：绑定在人物前方，而不是绑定在摄像机前
+local function updateUIPosition()
+    if not isFollowingCamera then return end
+    if not uiPart.Parent or not Camera then return end
+    
+    local char = LocalPlayer.Character
+    if not char then return end
+    
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    
+    -- 计算目标位置：人物 HumanoidRootPart 的前方（-Z轴）和上方
+    local targetPos = (hrp.CFrame * CFrame.new(FOLLOW_OFFSET)).Position
+    
+    -- 让面板始终面向摄像机，方便玩家阅读，但位置跟随人物前方
+    uiPart.CFrame = CFrame.lookAt(targetPos, Camera.CFrame.Position)
+end
+
+-- 渲染优先级 Camera.Value + 1，确保在摄像机更新之后更新 UI 位置
+RunService:BindToRenderStep("StarMeowUI", Enum.RenderPriority.Camera.Value + 1, updateUIPosition)
+
+-- ===== 10. 交互事件 =====
+local function toggleMode()
+    isFollowingCamera = not isFollowingCamera
+    if isFollowingCamera then
+        toggleBtn.Text = "跟随人物"
+        toggleBtn.TextColor3 = Color3.fromRGB(0, 255, 150)
+        btnStroke.Color = Color3.fromRGB(0, 255, 150)
+    else
+        toggleBtn.Text = "固定在原地"
+        toggleBtn.TextColor3 = Color3.fromRGB(255, 200, 60)
+        btnStroke.Color = Color3.fromRGB(255, 200, 60)
+    end
+end
+
+addConn(toggleBtn.MouseButton1Click:Connect(toggleMode))
+
+addConn(UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if input.KeyCode == Enum.KeyCode.T then
+        toggleMode()
+    end
+end))
+
+addConn(closeBtn.MouseButton1Click:Connect(function()
+    if _G.__StarMeow_Cleanup then _G.__StarMeow_Cleanup() end
+end))
+
+-- ===== 11. 角色重生处理 =====
+addConn(LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(1)
+    if noclipEnabled then setNoclip(true) end
+end))
+
+-- ===== 12. 清理函数 =====
+_G.__StarMeow_Cleanup = function()
+    _G.__StarMeow_Cleanup = nil
+    pcall(function()
+        RunService:UnbindFromRenderStep("StarMeowUI")
+    end)
+    for _, c in ipairs(Connections) do
+        pcall(function() c:Disconnect() end)
+    end
+    Connections = {}
+    if noclipConn then pcall(function() noclipConn:Disconnect() end) end
+    if uiPart and uiPart.Parent then
+        uiPart:Destroy()
+    end
+    print("[⭐️星喵UI] 已关闭")
+end
+
+print("[⭐️星喵UI] 加载完成！面板已绑定在人物前方，按 T 键可切换跟随/固定。")
